@@ -1,5 +1,5 @@
 {
   "pass": "test",
-  "tele_token": "7900060599:AAGgooE9dp7aBFEpg3sBo8X0uIjbRKzuFoI",
-  "chat_id": "7098971853"
+  "tele_token": "<your bot token>",
+  "chat_id": "<your chat id>"
 }
